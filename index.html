@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111827">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Height Measure</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:#f3f4f6;color:#111827}
+header{background:#111827;color:#fff;padding:18px 16px;text-align:center}header h1{margin:0;font-size:22px}header p{margin:6px 0 0;font-size:13px;opacity:.75}
+.container{max-width:700px;margin:auto;padding:16px}.card{background:#fff;border-radius:18px;padding:16px;margin-bottom:16px;box-shadow:0 4px 18px rgba(0,0,0,.08)}
+.camera-box{position:relative;width:100%;aspect-ratio:3/4;background:#000;border-radius:16px;overflow:hidden}video,canvas{position:absolute;width:100%;height:100%;object-fit:cover}canvas{pointer-events:none}
+.status{padding:12px;background:#f3f4f6;border-radius:10px;margin-bottom:12px;font-size:14px}.status.success{background:#dcfce7;color:#166534}.status.warning{background:#fef3c7;color:#92400e}.status.error{background:#fee2e2;color:#991b1b}
+button,select,input{width:100%;border:0;border-radius:12px;padding:13px;font-size:16px}button{background:#2563eb;color:#fff;font-weight:600;cursor:pointer;margin-top:8px}button.secondary{background:#374151}button.success{background:#16a34a}button:disabled{opacity:.5}
+label{display:block;font-size:14px;font-weight:600;margin:12px 0 6px}.result{text-align:center;padding:20px 10px}.result-value{font-size:42px;font-weight:800;color:#2563eb}.result-sub{font-size:18px;color:#4b5563;margin-top:5px}.info{font-size:13px;line-height:1.5;color:#4b5563}.reference-box{border:2px dashed #9ca3af;border-radius:12px;padding:12px;text-align:center;margin-top:10px}.hidden{display:none!important}footer{text-align:center;font-size:12px;color:#6b7280;padding:20px}
+</style>
+</head>
+<body>
+<header><h1>📏 Height Measure</h1><p>Camera-based person height estimation</p></header>
+<div class="container">
+<div class="card">
+<div id="status" class="status">Ready. Start the camera to begin.</div>
+<div class="camera-box"><video id="video" autoplay playsinline muted></video><canvas id="canvas"></canvas></div>
+<button id="startBtn">📷 Start Camera</button><button id="stopBtn" class="secondary hidden">⏹ Stop Camera</button>
+</div>
+
+<div class="card">
+<h3>📐 Calibration</h3>
+<div class="info">For real-world scale, use a known reference visible in the same camera view.</div>
+<label for="referenceType">Reference object</label>
+<select id="referenceType">
+<option value="210">Door — 210 cm</option><option value="200">Door — 200 cm</option>
+<option value="29.7">A4 paper — 29.7 cm</option><option value="21">A4 paper width — 21 cm</option>
+<option value="100">1 metre reference</option><option value="custom">Custom measurement</option>
+</select>
+<div id="customReference" class="hidden"><label for="customValue">Reference size in cm</label><input id="customValue" type="number" min="1" value="100"></div>
+<div class="reference-box"><strong>Setup</strong><p class="info">Keep the person and the reference at roughly the same distance from the camera and make the full body visible.</p></div>
+<button id="calibrateBtn" class="success">📐 Calibrate</button>
+</div>
+
+<div class="card">
+<h3>📊 Measurement</h3>
+<div class="result"><div class="result-value" id="heightCm">-- cm</div><div class="result-sub" id="heightFeet">-- ft -- in</div></div>
+<button id="measureBtn">📏 Measure Height</button>
+</div>
+
+<div class="card">
+<h3>⚙️ Settings</h3>
+<label for="unit">Display unit</label>
+<select id="unit"><option value="cm">Centimetres</option><option value="ft">Feet / Inches</option></select>
+</div>
+
+<div class="card"><h3>📱 Best Setup</h3><div class="info"><ol>
+<li>Keep the phone upright.</li><li>Place it about 2–4 metres away.</li><li>Make sure the whole body is visible.</li>
+<li>Stand straight with feet together.</li><li>Keep the reference and person visible.</li><li>Use good lighting.</li>
+</ol></div></div>
+</div>
+<footer>Height Measure • Camera estimation tool</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script>
+const video=document.getElementById("video"),canvas=document.getElementById("canvas"),ctx=canvas.getContext("2d");
+const startBtn=document.getElementById("startBtn"),stopBtn=document.getElementById("stopBtn"),measureBtn=document.getElementById("measureBtn"),calibrateBtn=document.getElementById("calibrateBtn");
+const statusBox=document.getElementById("status"),heightCm=document.getElementById("heightCm"),heightFeet=document.getElementById("heightFeet");
+const referenceType=document.getElementById("referenceType"),customReference=document.getElementById("customReference"),customValue=document.getElementById("customValue"),unit=document.getElementById("unit");
+let stream=null,camera=null,pose=null,latestLandmarks=null,calibrated=false,pixelsPerCm=null;
+
+function setStatus(message,type=""){statusBox.textContent=message;statusBox.className="status";if(type)statusBox.classList.add(type)}
+referenceType.addEventListener("change",()=>customReference.classList.toggle("hidden",referenceType.value!=="custom"));
+
+pose=new Pose({locateFile:file=>`https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+pose.setOptions({modelComplexity:1,smoothLandmarks:true,enableSegmentation:false,minDetectionConfidence:.5,minTrackingConfidence:.5});
+pose.onResults(results=>{
+ if(!video.videoWidth)return;
+ canvas.width=video.videoWidth;canvas.height=video.videoHeight;ctx.clearRect(0,0,canvas.width,canvas.height);
+ if(!results.poseLandmarks){latestLandmarks=null;setStatus("Person not detected. Please stand fully inside the camera.","warning");return}
+ latestLandmarks=results.poseLandmarks;drawSkeleton(latestLandmarks);setStatus("Person detected ✓","success");
+});
+function drawSkeleton(l){
+ const c=[[0,1],[1,2],[2,3],[3,7],[0,4],[4,5],[5,6],[6,8],[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]];
+ ctx.lineWidth=4;ctx.strokeStyle="#00ff88";
+ c.forEach(([a,b])=>{const p=l[a],q=l[b];if(!p||!q)return;ctx.beginPath();ctx.moveTo(p.x*canvas.width,p.y*canvas.height);ctx.lineTo(q.x*canvas.width,q.y*canvas.height);ctx.stroke()});
+ l.forEach(p=>{ctx.beginPath();ctx.arc(p.x*canvas.width,p.y*canvas.height,5,0,Math.PI*2);ctx.fillStyle="#fff";ctx.fill()});
+}
+startBtn.addEventListener("click",async()=>{
+ try{
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment",width:{ideal:1280},height:{ideal:720}},audio:false});
+  video.srcObject=stream;await video.play();startBtn.classList.add("hidden");stopBtn.classList.remove("hidden");
+  camera=new Camera(video,{onFrame:async()=>await pose.send({image:video}),width:1280,height:720});camera.start();
+  setStatus("Camera started. Stand fully inside the frame.","success");
+ }catch(e){console.error(e);setStatus("Camera permission was denied or the camera is unavailable.","error")}
+});
+stopBtn.addEventListener("click",()=>{
+ if(camera){camera.stop();camera=null} if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;video.srcObject=null;
+ startBtn.classList.remove("hidden");stopBtn.classList.add("hidden");setStatus("Camera stopped.");
+});
+function getReferenceCm(){if(referenceType.value==="custom"){const v=parseFloat(customValue.value);if(!v||v<=0){alert("Enter a valid reference measurement.");return null}return v}return parseFloat(referenceType.value)}
+function getBodyPixelHeight(){
+ if(!latestLandmarks)return null;
+ const ids=[0,11,12,23,24,25,26,27,28];
+ const pts=ids.map(i=>latestLandmarks[i]).filter(p=>p&&(p.visibility===undefined||p.visibility>.5));
+ if(pts.length<5)return null;
+ const ys=pts.map(p=>p.y*canvas.height);return Math.max(...ys)-Math.min(...ys);
+}
+calibrateBtn.addEventListener("click",()=>{
+ if(!latestLandmarks){alert("First make sure a person is visible.");return}
+ const ref=getReferenceCm();if(!ref)return;
+ const body=getBodyPixelHeight();if(!body){alert("Could not detect the full body.");return}
+ pixelsPerCm=body/ref;calibrated=true;setStatus(`Calibration complete using ${ref} cm reference.`,"success");
+});
+measureBtn.addEventListener("click",()=>{
+ if(!latestLandmarks){alert("Person not detected.");return}
+ const body=getBodyPixelHeight();if(!body){alert("Make sure your head and feet are visible.");return}
+ if(!calibrated||!pixelsPerCm){alert("Please calibrate first.");return}
+ const cm=Math.round((body/pixelsPerCm)*10)/10;displayHeight(cm);
+});
+function displayHeight(cm){
+ heightCm.textContent=`${cm} cm`;const ti=cm/2.54,ft=Math.floor(ti/12),inch=Math.round(ti%12);heightFeet.textContent=`${ft} ft ${inch} in`;
+}
+unit.addEventListener("change",()=>{
+ const cm=parseFloat(heightCm.textContent);if(!cm)return;
+ if(unit.value==="cm")heightCm.textContent=`${cm} cm`;else{const i=cm/2.54,f=Math.floor(i/12),r=Math.round(i%12);heightCm.textContent=`${f}' ${r}"`}
+});
+</script>
+</body>
+</html>
